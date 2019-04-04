@@ -55,13 +55,11 @@ class MumpsAT51 < Formula
   homepage "http://www.mumps-solver.org/"
   url "https://drake-homebrew.csail.mit.edu/mirror/mumps-5.1.2.tar.gz"
   sha256 "08a1fc988f5d22f9578ecfd66638b619d8201b118674f041a868d2e5f0d9af99"
-  revision 2
+  revision 3
 
   bottle do
     cellar :any
     root_url "https://drake-homebrew.csail.mit.edu/bottles"
-    sha256 "b1e5e9e80319695357031792a2b60a5ad02f491a36058634c8f27bd2bdc25f50" => :mojave
-    sha256 "5a851f4377a2a8447c21aedf456af3c3ef6fe7956961f6df18b4cb5d6d344639" => :high_sierra
   end
 
   keg_only :versioned_formula
@@ -69,44 +67,67 @@ class MumpsAT51 < Formula
   depends_on "gcc"
   depends_on "veclibfort"
 
-  def install
-    cp "Make.inc/Makefile.G95.SEQ", "Makefile.inc"
+  patch do
+    url "https://drake-homebrew.csail.mit.edu/patches/mumps-5.1.2-makefile-inc-generic-seq.patch"
+    sha256 "d345a6fc2337b02980d261a4273164cce38e4b6091e9c7af5c5d4fd4b6f47d66"
+  end
 
-    args = [
-      "AR=#{ENV.fc} -dynamiclib -Wl,-install_name -Wl,#{lib}/$(notdir $@) -undefined dynamic_lookup -o",
-      "CC=#{ENV.cc} -fPIC",
-      "CDEFS=-DAdd_",
-      "FC=#{ENV.fc} -fPIC",
-      "FL=#{ENV.fc} -fPIC",
-      "LIBBLAS=-L#{Formula["veclibfort"].opt_lib} -lvecLibFort",
-      "LIBEXT=.dylib",
-      "OPTF=-O",
-      "ORDERINGSF=-Dpord",
-      "RANLIB=echo",
-    ]
+  def install
+    cp "Make.inc/Makefile.inc.generic.SEQ", "Makefile.inc"
+    inreplace "Makefile.inc", "@rpath/", "#{opt_lib}/"
 
     ENV.deparallelize
-    system "make", "alllib", *args
+    system "make", "alllib"
 
-    include.install Dir["include/*.h"]
-    include.install Dir["libseq/*.h"]
-
-    lib.install Dir["lib/*"]
-    lib.install "libseq/libmpiseq.dylib"
+    include.install Dir["include/*.h", "libseq/*.h"]
+    lib.install Dir["lib/*.dylib", "libseq/*.dylib"]
   end
 
   test do
-    (testpath/"version.c").write <<~EOS
+    (testpath/"test.c").write <<~EOS
       #include <assert.h>
+      #include <stdio.h>
       #include <string.h>
       #include <dmumps_c.h>
-      int main() {
-        assert(strcmp(MUMPS_VERSION, "5.1.2") == 0);
+      #include <mpi.h>
+      int main(int argc, char **argv) {
+        DMUMPS_STRUC_C id;
+        MUMPS_INT n = 2;
+        MUMPS_INT8 nnz = 2;
+        MUMPS_INT irn[] = {1, 2};
+        MUMPS_INT jcn[] = {1, 2};
+        double a[2];
+        double rhs[2];
+        MUMPS_INT myid, ierr;
+        int error = 0;
+        ierr = MPI_Init(&argc, &argv);
+        assert(ierr == 0)
+        ierr = MPI_Comm_rank(MPI_COMM_WORLD, &myid);
+        assert(ierr == 0)
+        rhs[0] = 1.0; rhs[1] = 4.0;
+        a[0] = 1.0; a[1] = 2.0;
+        id.comm_fortran = -987654; id.par = 1; id.sym = 0; id.job = -1;
+        dmumps_c(&id);
+        if (myid == 0) {
+          id.n = n; id.nnz = nnz; id.irn = irn; id.jcn = jcn; id.a = a; id.rhs = rhs;
+        }
+        id.icntl[0] = -1; id.icntl[1] = -1; id.icntl[2] = -1; id.icntl[3] = 0; id.job = 6;
+        dmumps_c(&id);
+        if (id.infog[0] < 0) {
+          error = 1;
+        }
+        id.job = -2;
+        dmumps_c(&id);
+        if (myid == 0) {
+          assert(error == 0);
+        }
+        ierr = MPI_Finalize();
+        assert(ierr == 0)
         return 0;
       }
     EOS
 
-    system ENV.cc, "version.c", "-I#{opt_include}"
+    system ENV.cc, "test.c", "-I#{opt_include}", "-L#{opt_lib}", "-ldmumps", "-lmpiseq", "-lmumps_common", "-llapack"
     system "./a.out"
   end
 end
